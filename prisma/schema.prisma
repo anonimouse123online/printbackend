@@ -72,6 +72,13 @@ enum PickupDisputeStatus {
   DISMISSED
 }
 
+enum DocumentScanStatus {
+  QUARANTINED
+  AVAILABLE
+  REJECTED
+  EXPIRED
+}
+
 model User {
   id                       String           @id @default(cuid())
   fullName                 String           @map("full_name")
@@ -165,6 +172,8 @@ model DocumentFile {
   uploadedById     String           @map("uploaded_by")
   uploadedBy       User             @relation(fields: [uploadedById], references: [id], onDelete: Restrict)
   storageKey       String           @unique @map("storage_key")
+  scanStatus       DocumentScanStatus @default(QUARANTINED) @map("scan_status")
+  scannedAt        DateTime?        @map("scanned_at")
   originalFilename String           @map("original_filename")
   contentType      String           @map("content_type")
   fileSize         Int              @map("file_size")
@@ -174,6 +183,7 @@ model DocumentFile {
   items            PrintOrderItem[]
 
   @@index([uploadedById, expiresAt])
+  @@index([scanStatus, expiresAt])
   @@map("document_files")
 }
 

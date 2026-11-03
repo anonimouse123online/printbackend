@@ -9,8 +9,8 @@ import { hashPassword, issueToken } from '../src/auth.js';
 import { deleteFile, deletePrivateImage } from '../src/storage.js';
 
 const dbUrl = new URL(config.DATABASE_URL);
-if (config.NODE_ENV !== 'development' || !['localhost', '127.0.0.1', '::1'].includes(dbUrl.hostname) || dbUrl.pathname !== '/printready') {
-  throw new Error('Integration tests are restricted to the local development printready database.');
+if (config.NODE_ENV !== 'development' || !['localhost', '127.0.0.1', '::1'].includes(dbUrl.hostname) || dbUrl.pathname !== '/printready_test') {
+  throw new Error('Integration tests are restricted to the isolated local printready_test database.');
 }
 
 const suffix = randomBytes(8).toString('hex');
@@ -108,9 +108,12 @@ describe('PrintReady API integration', () => {
     pdfDoc.addPage([200, 200]);
     const pdf = Buffer.from(await pdfDoc.save());
     const upload = await request(app).post('/api/v1/files').set(auth(customer.token)).attach('file', pdf, { filename: 'test-document.pdf', contentType: 'application/pdf' });
-    expect(upload.status).toBe(201);
+    expect(upload.status, JSON.stringify(upload.body)).toBe(201);
     const file = upload.body.data.file;
     ids.files.push(file.id);
+    const scanRecord = await prisma.documentFile.findUnique({ where: { id: file.id }, select: { scanStatus: true, scannedAt: true } });
+    expect(scanRecord.scanStatus).toBe('AVAILABLE');
+    expect(scanRecord.scannedAt).toBeTruthy();
 
     const blockedOrder = await request(app).post('/api/v1/orders').set(auth(customer.token)).send({ shopId: shop.id, items: [{
       fileId: file.id, serviceId: service.id, paperSize: 'A4', colorMode: 'BW', printSides: 'SINGLE', copies: 2,
@@ -122,6 +125,13 @@ describe('PrintReady API integration', () => {
     expect(verified.status).toBe(200);
     expect(verified.body.data.shop.verificationReviewerId).toBe(admin.id);
     expect(verified.body.data.shop.verificationReviewedAt).toBeTruthy();
+
+    await prisma.documentFile.update({ where: { id: file.id }, data: { scanStatus: 'QUARANTINED', scannedAt: null } });
+    const quarantinedOrder = await request(app).post('/api/v1/orders').set(auth(customer.token)).send({ shopId: shop.id, items: [{
+      fileId: file.id, serviceId: service.id, paperSize: 'A4', colorMode: 'BW', printSides: 'SINGLE', copies: 2,
+    }] });
+    expect(quarantinedOrder.status).toBe(404);
+    await prisma.documentFile.update({ where: { id: file.id }, data: { scanStatus: 'AVAILABLE', scannedAt: new Date() } });
     expect(verified.body.data.shop.verificationNotes).toBe(reviewNote);
     const ownerShops = await request(app).get('/api/v1/owner/shops').set(auth(owner.token));
     expect(ownerShops.body.data.shops.find(item => item.id === shop.id)?.verificationStatus).toBe('VERIFIED');

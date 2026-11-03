@@ -4,7 +4,7 @@
 
 Automated verification run for this review:
 
-- Backend unit suite: 8 passed.
+- Backend unit suite: 11 passed.
 - Backend API integration suite: passed (the single end-to-end integration test).
 - Frontend production build: passed with Vite; output was written to a temporary directory outside the frontend tree.
 - Browser walkthrough: not performed. Browser automation is not available in this environment.
@@ -23,22 +23,35 @@ Manual browser checklist before release:
 9. Navigation: use refresh, browser back/forward, and direct links to Explore, order tracking, and dashboard routes.
 10. Temporary API outage: stop the API during list, tracking, chat, and upload requests; restore it and verify errors are understandable and retries recover.
 
-## Stage B status: blocked before production implementation
+## Stage B implementation status
 
-No R2 adapter, upload-intent/completion API, upload lifecycle schema, direct browser upload, malware scanner, cleanup worker, or storage quota implementation is present. The current `/files` route uses in-memory Multer, parses PDFs in the request process, writes to local filesystem storage, then creates an orderable file record. The existing file authorization checks are retained, but this is not safe for Render Free's ephemeral disk and is not a malware quarantine flow. Production startup now fails closed with an explicit configuration error until object storage and scanning are implemented.
+The code now includes an R2 S3-compatible private storage adapter, PDF quarantine and promotion, authenticated/rate-limited uploads, file signature and PDF parsing checks, a fail-closed ClamAV INSTREAM client, available/quarantined/rejected/expired states, a transaction-locked per-user document quota, authenticated no-store downloads, and expiry cleanup. Production startup requires R2 configuration, a private Render ClamAV hostname, a strong JWT secret, an HTTPS PostgreSQL URL, and exact HTTPS CORS origins. There is no scanner bypass in production.
 
-The code currently permits `STORAGE_DRIVER=s3` in configuration but `src/storage.js` still uses local filesystem functions. Do not set `STORAGE_DRIVER=s3` expecting R2 support. Keep this app off production until a real adapter, fail-closed document lifecycle, and scanner are implemented and tested. Existing files in `storage/private` were not modified or migrated.
+A new additive Prisma migration adds the document scan lifecycle. Existing records become QUARANTINED by default. The four existing cloud document records each reference a local PDF that is present and matches the recorded byte size. Their metadata is preserved, but they are not orderable or downloadable until the actual PDFs are transferred and scanned. Use `npm run storage:migrate-local` after applying the schema migration and configuring R2 plus a local ClamAV endpoint; it requires a private `PRINTREADY_MIGRATION_DATABASE_URL` pointing to the Render external PrintReady URL with `sslmode=require`. It does not change the local development `DATABASE_URL` or delete local files.
 
-Cloudflare R2 supports short-lived S3-compatible presigned `PUT`, `HEAD`, and `GET` operations. A browser upload also requires bucket CORS for the exact frontend origin and needed methods/headers. Presigned URLs are bearer tokens and must remain narrowly scoped and short lived. See [R2 presigned URL documentation](https://developers.cloudflare.com/r2/api/s3/presigned-urls/).
+The retention cleanup runs at process start and periodically while the API is running. It deletes expired unlinked documents and removes expired document objects after their attached orders have been terminal for the configured retention period, while preserving linked metadata. On Render, cleanup can be delayed while a service is stopped or unavailable; it catches up on the next process start.
 
-ClamAV is a reasonable low-cost scanner candidate, but it requires a running `clamd` service with updated signature databases. ClamAV documents its TCP protocol as unauthenticated and unencrypted, so it must remain on a private network. A separate worker/scanner service or managed scanning provider is required; the Render Free web service cannot run background workers or one-off jobs, and its filesystem is ephemeral. See [ClamAV daemon protocol](https://docs.clamav.net/manual/Usage/ClamdProtocol.html) and [Render Free service limits](https://render.com/docs/free). Do not mark any document `AVAILABLE` until both server-side PDF validation and a successful scanner verdict have been persisted.
+Unit and API tests use Vitest's test-only malware scanner stub. Production code always calls ClamAV. Integration tests are guarded to the local development `printready` database and clean their generated test rows and objects.
 
-Required deployment configuration once implemented (not currently consumed by a functioning R2 adapter): R2 account ID/endpoint, bucket, access key ID, secret access key, allowed frontend origin(s), scanner service endpoint and authentication, database URL with a deployment-appropriate connection limit, JWT secret, and explicit trusted CORS origins. Never expose R2 credentials in Vite variables or frontend code. Configure R2 bucket CORS for the exact frontend origin, `PUT`/`HEAD`/`GET`, and only required headers such as `Content-Type`.
+R2 uses Cloudflare's S3-compatible API. The bucket must remain private; the API proxies authorized downloads, so browser-to-bucket CORS and public URLs are not used. ClamAV's TCP protocol is unauthenticated and unencrypted, so production configuration only accepts a Render private-network hostname. See [Cloudflare R2 S3 compatibility](https://developers.cloudflare.com/r2/api/s3/) and [ClamAV INSTREAM protocol](https://docs.clamav.net/manual/Usage/ClamdProtocol.html).
 
+## Required production environment
+
+- `NODE_ENV=production`, `PORT` (Render supplies it), `DATABASE_URL` (the existing Render database's internal URL), and a rotated `JWT_SECRET` of at least 64 characters.
+- `TRUSTED_ORIGINS=https://printready-z0fn.onrender.com` and `FRONTEND_URL=https://printready-z0fn.onrender.com` unless the frontend uses a different verified origin.
+- `STORAGE_DRIVER=r2`, `R2_ACCOUNT_ID`, `R2_BUCKET`, `R2_ACCESS_KEY_ID`, and `R2_SECRET_ACCESS_KEY`. Keep all four credentials in Render secrets and grant the key access only to the private bucket.
+- `CLAMAV_HOST=<private-service>.internal` and `CLAMAV_PORT=3310`. The scanner daemon must be reachable only over the private network and configured with a stream limit at least as large as `MAX_UPLOAD_BYTES`.
+- `USER_STORAGE_QUOTA_BYTES`, `MAX_UPLOAD_BYTES`, and `FILE_RETENTION_DAYS` may use the documented defaults in `.env.example`.
+
+Do not copy the local `.env` into Render wholesale. The local file keeps `STORAGE_DRIVER=local` and the local PostgreSQL URL. Real payment-provider checkout/webhooks are still disabled; the existing manual shop-payment flow remains available.
 ## Resource measurements
 
 Express/Pino already records response duration. This review adds process RSS, heap, and external-memory values to request completion logs, plus PDF validation duration and concurrency. These are point-in-time diagnostics, not benchmark results. No before/after load test, query-count capture, or production memory profile was available. `MAX_CONCURRENT_PDF_VALIDATIONS` defaults to 1 and accepts 1–4; this bounds simultaneous PDF parser calls but does not move parsing off the Express process.
 
 ## Render readiness
 
-Not deployment-ready. Local file persistence is incompatible with Render Free's ephemeral filesystem; private object storage and scanner infrastructure are absent. Production DB migration state, connection limits, bucket CORS, external credentials, cleanup scheduling, and cold-start behavior were not verified. The health and readiness endpoints exist, graceful SIGINT/SIGTERM shutdown is present, and CORS is configured from `TRUSTED_ORIGINS`; these checks do not resolve the storage and scanning blockers.
+NOT READY. The Render account currently has the PrintReady static frontend only; there is no PrintReady backend web service. The backend repository is `https://github.com/anonimouse123online/printbackend`, branch `main`. Suggested service settings once dependencies are provisioned: Oregon, Node, `npm ci && npm run db:generate && npm prune --omit=dev --omit=peer` build command, `npm start` start command, and `/api/v1/health/ready` HTTP health check. The production-only dependency prune was simulated and reported zero advisories; the full development tree still includes Prisma CLI advisories.
+
+No R2 bucket, R2 credentials, private ClamAV service, or backend service was created. Render MCP does not expose the existing database connection URL through the service details available here. The existing internal database URL must be added to the backend service as the `DATABASE_URL` secret when it is created. Render supports private service communication by region and application-level health checks; see [Render web services](https://render.com/docs/web-services) and [Render health checks](https://render.com/docs/health-checks).
+
+Before deployment, approve or provision the private bucket and scanner service, securely configure their credentials, apply the additive Prisma migration to the existing Render database, scan and transfer the four local PDFs, and verify the production startup and readiness endpoint. Do not declare the service ready until the real R2 bucket and ClamAV scanner are reachable and the four legacy records are AVAILABLE.

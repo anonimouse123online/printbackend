@@ -2,6 +2,8 @@ import {describe,it,expect} from 'vitest';
 import {calculateLine} from '../src/pricing.js';
 import {assertTransition} from '../src/order-state.js';
 import {provisionInitialAdmin} from '../src/admin-provisioning.js';
+import {parseClamReply} from '../src/antivirus.js';
+import {createDemoModeGate} from '../src/demo-mode.js';
 
 describe('authoritative printing prices',()=>{
  const pricing={rates:{'A4:BW:SINGLE':200,'A4:COLOR:DOUBLE':800},bindingCents:{comb:2500}};
@@ -12,6 +14,32 @@ describe('authoritative printing prices',()=>{
 describe('order state machine',()=>{
  it('allows shop confirmation and pickup completion',()=>{expect(()=>assertTransition('SUBMITTED','AWAITING_PAYMENT')).not.toThrow();expect(()=>assertTransition('READY_FOR_PICKUP','COMPLETED')).not.toThrow()});
  it('rejects payment bypass and duplicate completion',()=>{expect(()=>assertTransition('SUBMITTED','PAID')).toThrow();expect(()=>assertTransition('COMPLETED','COMPLETED')).toThrow()});
+});
+describe('malware scanner responses',()=>{
+ it('accepts only an explicit clean verdict',()=>expect(parseClamReply('stream: OK')).toMatchObject({clean:true,engine:'clamav'}));
+ it('rejects detected malware without returning a signature name',()=>expect(parseClamReply('stream: Eicar-Test-Signature FOUND')).toEqual({clean:false}));
+ it('fails closed for scanner errors',()=>expect(()=>parseClamReply('stream: ERROR')).toThrow('Malware scanner returned an invalid response'));
+});
+describe('demo mode route gate',()=>{
+ const run=(method,{allowRead=false,enabled=true}={})=>{
+  const calls={next:0,status:null,json:null,authenticated:0};
+  const res={status(code){calls.status=code;return this},json(body){calls.json=body;return this}};
+  const gate=createDemoModeGate({enabled,allowRead,feature:'Document uploads and downloads',authenticate(_req,_res,next){calls.authenticated++;next()}});
+  gate({method},res,()=>calls.next++);
+  return calls;
+ };
+ it('authenticates then blocks document writes and reads with 503',()=>{
+  for(const method of ['GET','POST','PUT','PATCH','DELETE']){
+   const result=run(method);
+   expect(result).toMatchObject({authenticated:1,status:503,next:0});
+   expect(result.json.error.code).toBe('DEMO_MODE_UNAVAILABLE');
+  }
+ });
+ it('keeps safe order reads available and blocks every order mutation',()=>{
+  for(const method of ['GET','HEAD','OPTIONS'])expect(run(method,{allowRead:true})).toMatchObject({next:1,authenticated:0,status:null});
+  for(const method of ['POST','PUT','PATCH','DELETE'])expect(run(method,{allowRead:true})).toMatchObject({next:0,authenticated:1,status:503});
+ });
+ it('is transparent when demo mode is off',()=>expect(run('POST',{enabled:false})).toMatchObject({next:1,authenticated:0,status:null}));
 });
 describe('initial administrator provisioning',()=>{
  const makeDb = ({locked=true, existing=null, adminCount=0}={}) => {
