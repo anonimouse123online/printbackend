@@ -1,0 +1,44 @@
+{
+  "name": "printready-backend",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "npm run db:setup && node --env-file-if-exists=.env --watch src/server.js",
+    "start": "node --env-file-if-exists=.env src/server.js",
+    "db:setup": "node scripts/ensure-env.js && npm run db:validate && npm run db:init && npm run db:migrate:deploy && node scripts/ensure-prisma-client.js && npm run db:verify",
+    "db:init": "node --env-file-if-exists=.env scripts/db-setup.js",
+    "db:validate": "prisma validate",
+    "db:migrate:dev": "prisma migrate dev",
+    "db:migrate:deploy": "prisma migrate deploy",
+    "db:status": "prisma migrate status",
+    "db:generate": "prisma generate",
+    "db:verify": "node --env-file-if-exists=.env scripts/db-verify.js",
+    "admin": "node --env-file-if-exists=.env scripts/admin.js",
+    "test": "vitest run tests/unit.test.js --pool=threads --poolOptions.threads.singleThread",
+    "test:integration": "node --env-file-if-exists=.env node_modules/vitest/vitest.mjs run tests/api.integration.test.js --pool=threads --poolOptions.threads.singleThread",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@prisma/client": "^6.5.0",
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "express": "^4.21.2",
+    "express-rate-limit": "^7.5.0",
+    "file-type": "^20.5.0",
+    "helmet": "^8.0.0",
+    "jsonwebtoken": "^9.0.2",
+    "multer": "^1.4.5-lts.1",
+    "pdf-lib": "^1.17.1",
+    "pg": "^8.23.1",
+    "pino": "^9.6.0",
+    "pino-http": "^10.4.0",
+    "qrcode": "^1.5.4",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "prisma": "^6.5.0",
+    "supertest": "^7.0.0",
+    "vitest": "^3.0.8"
+  }
+}

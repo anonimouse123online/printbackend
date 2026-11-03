@@ -1,0 +1,388 @@
+generator client {
+  provider   = "prisma-client-js"
+  engineType = "binary"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  CUSTOMER
+  SHOP_OWNER
+  ADMIN
+}
+
+enum AccountStatus {
+  ACTIVE
+  SUSPENDED
+  PENDING
+}
+
+enum VerificationStatus {
+  PENDING
+  VERIFIED
+  REJECTED
+}
+
+enum ShopOperatingStatus {
+  OPEN
+  PAUSED
+  CLOSED
+}
+
+enum OrderStatus {
+  DRAFT
+  SUBMITTED
+  AWAITING_PAYMENT
+  PAID
+  IN_QUEUE
+  PRINTING
+  READY_FOR_PICKUP
+  COMPLETED
+  REJECTED
+  CANCELLED
+  REFUND_PENDING
+  REFUNDED
+}
+
+enum PaymentStatus {
+  PENDING
+  SUCCEEDED
+  FAILED
+  REFUND_PENDING
+  REFUNDED
+}
+
+enum ShopPaymentMethod {
+  GCASH
+  MAYA
+}
+
+enum PaymentReviewStatus {
+  PENDING_VERIFICATION
+  APPROVED
+  REJECTED
+}
+
+enum PickupDisputeStatus {
+  OPEN
+  RESOLVED
+  DISMISSED
+}
+
+model User {
+  id                       String           @id @default(cuid())
+  fullName                 String           @map("full_name")
+  email                    String           @unique
+  passwordHash             String           @map("password_hash")
+  role                     UserRole         @default(CUSTOMER)
+  accountStatus            AccountStatus    @default(ACTIVE) @map("account_status")
+  createdAt                DateTime         @default(now()) @map("created_at")
+  updatedAt                DateTime         @updatedAt @map("updated_at")
+  shops                    PrintingShop[]
+  files                    DocumentFile[]
+  orders                   PrintOrder[]     @relation("CustomerOrders")
+  reviews                  CustomerReview[]
+  notifications            Notification[]
+  audits                   AuditLog[]
+  pickupConfirmations      PickupToken[]    @relation("PickupConfirmer")
+  verifiedShops            PrintingShop[]   @relation("ShopVerifier")
+  paymentReviews           Payment[]        @relation("PaymentReviewer")
+  sentOrderMessages        OrderMessage[]   @relation("MessageSender")
+  receivedOrderMessages    OrderMessage[]   @relation("MessageRecipient")
+  pickupOrderConfirmations PrintOrder[]     @relation("OrderPickupConfirmer")
+  openedPickupDisputes     PickupDispute[]  @relation("PickupDisputeOpener")
+  reviewedPickupDisputes   PickupDispute[]  @relation("PickupDisputeReviewer")
+
+  @@map("users")
+}
+
+model PrintingShop {
+  id                     String              @id @default(cuid())
+  ownerId                String              @map("owner_id")
+  owner                  User                @relation(fields: [ownerId], references: [id], onDelete: Restrict)
+  shopName               String              @map("shop_name")
+  description            String?
+  address                String
+  city                   String
+  latitude               Float?
+  longitude              Float?
+  contactNumber          String?             @map("contact_number")
+  verificationStatus     VerificationStatus  @default(PENDING) @map("verification_status")
+  verificationReviewedAt DateTime?           @map("verification_reviewed_at")
+  verificationReviewerId String?             @map("verification_reviewer_id")
+  verificationReviewer   User?               @relation("ShopVerifier", fields: [verificationReviewerId], references: [id], onDelete: SetNull)
+  verificationNotes      String?             @map("verification_notes")
+  paymentQrStorageKey    String?             @map("payment_qr_storage_key")
+  paymentMethod          ShopPaymentMethod?  @map("payment_method")
+  paymentRecipientName   String?             @map("payment_recipient_name")
+  paymentWalletNumber    String?             @map("payment_wallet_number")
+  operatingStatus        ShopOperatingStatus @default(OPEN) @map("operating_status")
+  createdAt              DateTime            @default(now()) @map("created_at")
+  updatedAt              DateTime            @updatedAt @map("updated_at")
+  hours                  ShopOperatingHour[]
+  services               ShopService[]
+  orders                 PrintOrder[]
+  reviews                CustomerReview[]
+
+  @@index([city, verificationStatus, operatingStatus])
+  @@index([ownerId])
+  @@map("printing_shops")
+}
+
+model ShopOperatingHour {
+  id       String       @id @default(cuid())
+  shopId   String       @map("shop_id")
+  shop     PrintingShop @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  weekday  Int
+  opensAt  String?      @map("opens_at")
+  closesAt String?      @map("closes_at")
+  closed   Boolean      @default(false)
+
+  @@unique([shopId, weekday])
+  @@map("shop_operating_hours")
+}
+
+model ShopService {
+  id                   String           @id @default(cuid())
+  shopId               String           @map("shop_id")
+  shop                 PrintingShop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  serviceName          String           @map("service_name")
+  serviceType          String           @map("service_type")
+  isAvailable          Boolean          @default(true) @map("is_available")
+  pricingConfiguration Json             @map("pricing_configuration")
+  createdAt            DateTime         @default(now()) @map("created_at")
+  orderItems           PrintOrderItem[]
+
+  @@index([shopId, isAvailable])
+  @@map("shop_services")
+}
+
+model DocumentFile {
+  id               String           @id @default(cuid())
+  uploadedById     String           @map("uploaded_by")
+  uploadedBy       User             @relation(fields: [uploadedById], references: [id], onDelete: Restrict)
+  storageKey       String           @unique @map("storage_key")
+  originalFilename String           @map("original_filename")
+  contentType      String           @map("content_type")
+  fileSize         Int              @map("file_size")
+  pageCount        Int              @map("page_count")
+  createdAt        DateTime         @default(now()) @map("created_at")
+  expiresAt        DateTime         @map("expires_at")
+  items            PrintOrderItem[]
+
+  @@index([uploadedById, expiresAt])
+  @@map("document_files")
+}
+
+model PrintOrder {
+  id                      String               @id @default(cuid())
+  orderReference          String               @unique @map("order_reference")
+  customerId              String               @map("customer_id")
+  customer                User                 @relation("CustomerOrders", fields: [customerId], references: [id], onDelete: Restrict)
+  shopId                  String               @map("shop_id")
+  shop                    PrintingShop         @relation(fields: [shopId], references: [id], onDelete: Restrict)
+  orderStatus             OrderStatus          @default(SUBMITTED) @map("order_status")
+  subtotalCents           Int                  @map("subtotal_cents")
+  totalCents              Int                  @map("total_cents")
+  currency                String               @default("PHP")
+  estimatedPickupAt       DateTime?            @map("estimated_pickup_at")
+  createdAt               DateTime             @default(now()) @map("created_at")
+  updatedAt               DateTime             @updatedAt @map("updated_at")
+  items                   PrintOrderItem[]
+  payments                Payment[]
+  messages                OrderMessage[]
+  history                 OrderStatusHistory[]
+  pickupToken             PickupToken?
+  pickupConfirmedByUserId String?              @map("pickup_confirmed_by_user_id")
+  pickupConfirmedByUser   User?                @relation("OrderPickupConfirmer", fields: [pickupConfirmedByUserId], references: [id], onDelete: SetNull)
+  pickupConfirmedByRole   UserRole?            @map("pickup_confirmed_by_role")
+  pickupConfirmedAt       DateTime?            @map("pickup_confirmed_at")
+  pickupDispute           PickupDispute?
+  review                  CustomerReview?
+
+  @@index([customerId, createdAt])
+  @@index([shopId, orderStatus, createdAt])
+  @@map("print_orders")
+}
+
+model PrintOrderItem {
+  id                  String       @id @default(cuid())
+  orderId             String       @map("order_id")
+  order               PrintOrder   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  serviceId           String?      @map("service_id")
+  service             ShopService? @relation(fields: [serviceId], references: [id], onDelete: Restrict)
+  fileId              String       @map("file_id")
+  file                DocumentFile @relation(fields: [fileId], references: [id], onDelete: Restrict)
+  paperSize           String       @map("paper_size")
+  colorMode           String       @map("color_mode")
+  printSides          String       @map("print_sides")
+  copies              Int
+  pageRange           String?      @map("page_range")
+  pageCount           Int          @map("page_count")
+  bindingType         String?      @map("binding_type")
+  specialInstructions String?      @map("special_instructions")
+  lineTotalCents      Int          @map("line_total_cents")
+
+  @@map("print_order_items")
+}
+
+model Payment {
+  id                    String               @id @default(cuid())
+  orderId               String               @map("order_id")
+  order                 PrintOrder           @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  provider              String
+  providerPaymentId     String?              @unique @map("provider_payment_id")
+  amountCents           Int                  @map("amount_cents")
+  currency              String               @default("PHP")
+  status                PaymentStatus        @default(PENDING)
+  reviewStatus          PaymentReviewStatus? @map("review_status")
+  referenceNumber       String?              @unique @map("reference_number")
+  recipientNameSnapshot String?              @map("recipient_name_snapshot")
+  walletNumberSnapshot  String?              @map("wallet_number_snapshot")
+  paymentMethodSnapshot ShopPaymentMethod?   @map("payment_method_snapshot")
+  recipientQrStorageKey String?              @map("recipient_qr_storage_key")
+  proofStorageKey       String?              @unique @map("proof_storage_key")
+  rejectionReason       String?              @map("rejection_reason")
+  submittedAt           DateTime?            @map("submitted_at")
+  reviewedAt            DateTime?            @map("reviewed_at")
+  reviewerId            String?              @map("reviewer_id")
+  reviewer              User?                @relation("PaymentReviewer", fields: [reviewerId], references: [id], onDelete: SetNull)
+  checkoutUrl           String?              @map("checkout_url")
+  paidAt                DateTime?            @map("paid_at")
+  createdAt             DateTime             @default(now()) @map("created_at")
+  refunds               Refund[]
+
+  @@index([orderId, status])
+  @@index([reviewStatus, createdAt])
+  @@map("payments")
+}
+
+model OrderMessage {
+  id          String     @id @default(cuid())
+  orderId     String     @map("order_id")
+  order       PrintOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  senderId    String     @map("sender_id")
+  sender      User       @relation("MessageSender", fields: [senderId], references: [id], onDelete: Restrict)
+  recipientId String     @map("recipient_id")
+  recipient   User       @relation("MessageRecipient", fields: [recipientId], references: [id], onDelete: Restrict)
+  body        String
+  readAt      DateTime?  @map("read_at")
+  createdAt   DateTime   @default(now()) @map("created_at")
+
+  @@index([orderId, createdAt])
+  @@index([recipientId, readAt, createdAt])
+  @@map("order_messages")
+}
+
+model Refund {
+  id               String        @id @default(cuid())
+  paymentId        String        @map("payment_id")
+  payment          Payment       @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  providerRefundId String?       @unique @map("provider_refund_id")
+  amountCents      Int           @map("amount_cents")
+  status           PaymentStatus @default(REFUND_PENDING)
+  createdAt        DateTime      @default(now()) @map("created_at")
+
+  @@map("refunds")
+}
+
+model PaymentWebhookEvent {
+  id         String   @id @default(cuid())
+  provider   String
+  eventId    String   @map("event_id")
+  receivedAt DateTime @default(now()) @map("received_at")
+
+  @@unique([provider, eventId])
+  @@map("payment_webhook_events")
+}
+
+model OrderStatusHistory {
+  id          String       @id @default(cuid())
+  orderId     String       @map("order_id")
+  order       PrintOrder   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  fromStatus  OrderStatus? @map("from_status")
+  toStatus    OrderStatus  @map("to_status")
+  changedById String?      @map("changed_by_id")
+  reason      String?
+  createdAt   DateTime     @default(now()) @map("created_at")
+
+  @@index([orderId, createdAt])
+  @@map("order_status_history")
+}
+
+model PickupToken {
+  id            String     @id @default(cuid())
+  orderId       String     @unique @map("order_id")
+  order         PrintOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  tokenHash     String     @unique @map("token_hash")
+  expiresAt     DateTime   @map("expires_at")
+  consumedAt    DateTime?  @map("consumed_at")
+  confirmedById String?    @map("confirmed_by_id")
+  confirmedBy   User?      @relation("PickupConfirmer", fields: [confirmedById], references: [id], onDelete: SetNull)
+
+  @@map("pickup_tokens")
+}
+
+model PickupDispute {
+  id              String              @id @default(cuid())
+  orderId         String              @unique @map("order_id")
+  order           PrintOrder          @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  openedById      String              @map("opened_by_id")
+  openedBy        User                @relation("PickupDisputeOpener", fields: [openedById], references: [id], onDelete: Restrict)
+  reason          String
+  status          PickupDisputeStatus @default(OPEN)
+  reviewedById    String?             @map("reviewed_by_id")
+  reviewedBy      User?               @relation("PickupDisputeReviewer", fields: [reviewedById], references: [id], onDelete: SetNull)
+  resolutionNotes String?             @map("resolution_notes")
+  reviewedAt      DateTime?           @map("reviewed_at")
+  createdAt       DateTime            @default(now()) @map("created_at")
+  updatedAt       DateTime            @updatedAt @map("updated_at")
+
+  @@index([status, createdAt])
+  @@map("pickup_disputes")
+}
+
+model CustomerReview {
+  id         String       @id @default(cuid())
+  orderId    String       @unique @map("order_id")
+  order      PrintOrder   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  customerId String       @map("customer_id")
+  customer   User         @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  shopId     String       @map("shop_id")
+  shop       PrintingShop @relation(fields: [shopId], references: [id], onDelete: Restrict)
+  rating     Int
+  comment    String?
+  createdAt  DateTime     @default(now()) @map("created_at")
+
+  @@map("customer_reviews")
+}
+
+model Notification {
+  id        String    @id @default(cuid())
+  userId    String    @map("user_id")
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      String
+  payload   Json
+  readAt    DateTime? @map("read_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  @@index([userId, readAt, createdAt])
+  @@map("notifications")
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  actorId    String?  @map("actor_id")
+  actor      User?    @relation(fields: [actorId], references: [id], onDelete: SetNull)
+  action     String
+  entityType String   @map("entity_type")
+  entityId   String   @map("entity_id")
+  metadata   Json?
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@index([entityType, entityId, createdAt])
+  @@map("audit_logs")
+}
